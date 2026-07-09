@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Proxy for 'emar' - activates emsdk only for this one call, then deactivates.
+# See _proxy_core.sh next to this file for the actual logic.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${DIR}/_proxy_core.sh"
+_emproxy_run "emar" "$@"
+exit $?
