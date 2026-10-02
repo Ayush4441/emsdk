@@ -31,14 +31,14 @@ if any(' ' in a for a in param_file_args):
   with open(new_param_filename, 'w') as f:
     for param in param_file_args:
       if ' ' in param:
-        f.write('"%s"' % param)
+        f.write(f'"{param}"')
       else:
         f.write(param)
       f.write('\n')
   sys.argv[1] = '@' + new_param_filename
 
-emcc_py = os.path.join(os.environ['EMSCRIPTEN'], 'emcc.py')
-rtn = subprocess.call([sys.executable, emcc_py, *sys.argv[1:]])
+emxx_py = os.path.join(os.environ['EMSCRIPTEN'], 'em++.py')
+rtn = subprocess.call([sys.executable, emxx_py, *sys.argv[1:]])
 if rtn != 0:
   sys.exit(1)
 
@@ -84,7 +84,7 @@ extensions = [
     '.wasm',
     '.wasm.map',
     '.data',
-    '.js.symbols',
+    '.symbols',
     '.wasm.debug.wasm',
     '.html',
     '.ts',
@@ -116,7 +116,7 @@ if os.path.exists(wasm_base + '.debug.wasm') and os.path.exists(wasm_base):
 
     # Next we need to convert length of the filename to LEB128.
     # Start by converting the length of the filename to a bit string.
-    bit_string = '{0:b}'.format(len(base_name + '.wasm.debug.wasm'))
+    bit_string = f"{len(base_name + '.wasm.debug.wasm'):b}"
 
     # Pad the bit string with 0s so that its length is a multiple of 7.
     while len(bit_string) % 7 != 0:
@@ -153,7 +153,7 @@ if os.path.exists(wasm_base + '.debug.wasm') and os.path.exists(wasm_base):
 
 # Make sure we have at least one output file.
 if not files:
-  print('emcc.py did not appear to output any known files!')
+  print('em++.py did not appear to output any known files!')
   sys.exit(1)
 
 # cc_binary must output exactly one file; put all the output files in a tarball.

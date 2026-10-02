@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+import glob
 import json
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -38,13 +40,13 @@ def copy_emsdk_to(targetdir):
 def check_call(cmd, **kwargs):
   if type(cmd) is not list:
     cmd = cmd.split()
-  print('running: %s' % cmd)
+  print(f'running: {cmd}')
   subprocess.run(cmd, check=True, text=True, **kwargs)
 
 
 def checked_call_with_output(cmd, expected=None, unexpected=None, stderr=None, env=None):
   cmd = cmd.split(' ')
-  print('running: %s' % cmd)
+  print(f'running: {cmd}')
   try:
     stdout = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=stderr, check=True, text=True, env=env).stdout
   except subprocess.CalledProcessError as e:
@@ -68,7 +70,7 @@ def failing_call_with_output(cmd, expected, env=None):
     print('warning: skipping part of failing_call_with_output() due to error codes not being propagated (see #592)')
   else:
     assert proc.returncode, 'call must have failed: ' + str([stdout, '\n========\n', stderr])
-  assert expected in stdout or expected in stderr, 'call did not have the expected output: %s: %s' % (expected, str([stdout, '\n========\n', stderr]))
+  assert expected in stdout or expected in stderr, 'call did not have the expected output: {}: {}'.format(expected, str([stdout, '\n========\n', stderr]))
 
 
 def hack_emsdk(marker, replacement):
@@ -90,6 +92,24 @@ def get_longest_path_in_dir(dirname):
       if len(fullname) > len(longest):
         longest = fullname
   return longest
+
+
+def remove_file(filename):
+  if os.path.exists(filename):
+    os.remove(filename)
+
+
+def remove_tree(path):
+  if not os.path.exists(path):
+    return
+  if WINDOWS:
+    path = '\\\\?\\' + path
+
+  def remove_readonly(func, path2, _):
+    os.chmod(path2, stat.S_IRWXU)
+    func(path2)
+
+  shutil.rmtree(path, onerror=remove_readonly)
 
 
 # Set up
@@ -144,8 +164,9 @@ def upstream_emcc(root='.'):
 
 
 class Emsdk(unittest.TestCase):
-  @classmethod
-  def setUpClass(cls):
+  def setUp(self):
+    run_emsdk('install latest')
+    run_emsdk('activate latest')
     with open('hello_world.c', 'w') as f:
       f.write('''\
 #include <stdio.h>
@@ -155,10 +176,11 @@ int main() {
    return 0;
 }
 ''')
+    self.addCleanup(remove_file, 'hello_world.c')
 
-  def setUp(self):
-    run_emsdk('install latest')
-    run_emsdk('activate latest')
+  def tearDown(self):
+    for f in glob.glob('a.out*'):
+      os.remove(f)
 
   def test_extrememly_long_filenames(self):
     # We have special support for filenames longer than 256 on windows. This
@@ -168,11 +190,9 @@ int main() {
 
     additional = 140 - len(longpath)
     longpath += 'x' * additional
-    if os.path.exists(longpath):
-      # shutil.rmtree requires the special long path prefix
-      longpath_with_prefix = '\\\\?\\' + longpath
-      assert os.path.exists(longpath_with_prefix)
-      shutil.rmtree(longpath_with_prefix)
+
+    remove_tree(longpath)
+    self.addCleanup(remove_tree, longpath)
 
     os.makedirs(longpath)
     copy_emsdk_to(longpath)
@@ -265,18 +285,17 @@ int main() {
 
     # Test the normal tools like node don't re-download on re-install
     print('another install must re-download')
-    checked_call_with_output(emsdk + ' uninstall node-22.16.0-64bit')
-    checked_call_with_output(emsdk + ' install node-22.16.0-64bit', expected='Downloading:', unexpected='already installed')
-    checked_call_with_output(emsdk + ' install node-22.16.0-64bit', unexpected='Downloading:', expected='already installed')
+    checked_call_with_output(emsdk + ' uninstall node-24.19.0-64bit')
+    checked_call_with_output(emsdk + ' install node-24.19.0-64bit', expected='Downloading:', unexpected='already installed')
+    checked_call_with_output(emsdk + ' install node-24.19.0-64bit', unexpected='Downloading:', expected='already installed')
 
   def test_tot_upstream(self):
-    print('test update-tags')
-    run_emsdk('update-tags')
     print('test tot-upstream')
     run_emsdk('install tot-upstream')
     with open(emconfig) as f:
       config = f.read()
     run_emsdk('activate tot-upstream')
+    self.addCleanup(remove_file, emconfig + '.old')
     with open(emconfig + '.old') as f:
       old_config = f.read()
     self.assertEqual(config, old_config)
@@ -315,14 +334,15 @@ int main() {
   def test_no_32bit(self):
     print('test 32-bit error')
     emsdk_hacked = hack_emsdk('not is_os_64bit()', 'True')
-    failing_call_with_output('%s %s install latest' % (sys.executable, emsdk_hacked),
+    self.addCleanup(remove_file, emsdk_hacked)
+    failing_call_with_output(f'{sys.executable} {emsdk_hacked} install latest',
                              'this tool is only provided for 64-bit OSes')
-    os.remove(emsdk_hacked)
 
   def test_update_no_git(self):
     print('test non-git update')
 
     temp_dir = tempfile.mkdtemp()
+    self.addCleanup(remove_tree, temp_dir)
     copy_emsdk_to(temp_dir)
 
     olddir = os.getcwd()
@@ -348,7 +368,8 @@ int main() {
 
   def test_activate_missing(self):
     run_emsdk('install latest')
-    failing_call_with_output(emsdk + ' activate 2.0.1', expected="error: tool is not installed and therefore cannot be activated: 'releases-13e29bd55185e3c12802bc090b4507901856b2ba-64bit'")
+    expected = "error: tool is not installed and therefore cannot be activated: 'releases-13e29bd55185e3c12802bc090b4507901856b2ba-64bit'"
+    failing_call_with_output(emsdk + ' activate 2.0.1', expected=expected)
 
   def test_keep_downloads(self):
     env = os.environ.copy()
@@ -360,6 +381,19 @@ int main() {
     checked_call_with_output(emsdk + ' install 3.1.54', expected='Downloading:', env=env)
     checked_call_with_output(emsdk + ' install 3.1.55', expected='Downloading:', env=env)
     checked_call_with_output(emsdk + ' install 3.1.54', expected='already downloaded, skipping', unexpected='Downloading:', env=env)
+
+  def test_unicode_path(self):
+    temp_dir = tempfile.mkdtemp(prefix='test_työpöytä_')
+    self.addCleanup(remove_tree, temp_dir)
+    copy_emsdk_to(temp_dir)
+
+    olddir = os.getcwd()
+    try:
+      os.chdir(temp_dir)
+      run_emsdk('list')
+      run_emsdk('construct_env')
+    finally:
+      os.chdir(olddir)
 
 
 if __name__ == '__main__':
